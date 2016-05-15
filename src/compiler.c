@@ -4,13 +4,17 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include "bf.h"
 #include "compiler.h"
 #include "optimizer.h"
 #include "vm.h"
 #include "list.h"
 
 void bf_state_init(bf_state* state) {
-
+    state->filename = 0;
+    state->code = 0;
+    state->code_size = 0;
+    state->fd = 0;
 }
 
 bf_state* bf_create_state() {
@@ -18,7 +22,7 @@ bf_state* bf_create_state() {
     return state;
 }
 
-void bf_state_read(bf_state* state, char* filename) {
+void bf_state_read(bf_state* state, const char* filename) {
     state->fd = open(filename, O_RDONLY);
     state->filename = filename;
     if (state->fd < 0) {
@@ -34,8 +38,9 @@ void bf_state_read(bf_state* state, char* filename) {
     state->code_size = finfo.st_size;
 }
 
-bf_program* bf_create_program() {
-    return (bf_program*) malloc(sizeof(bf_program));
+void bf_state_free(bf_state* state) {
+    free(state->code);
+    free(state);
 }
 
 bf_block* bf_create_block(bool is_loop, bool is_container) {
@@ -46,7 +51,7 @@ bf_block* bf_create_block(bool is_loop, bool is_container) {
     block->prev = NULL;
     block->parent = NULL;
     if (is_container) {
-        block->container = (_container*) malloc(sizeof(_container));
+        block->container = (bf_container*) malloc(sizeof(bf_container));
         block->container->first = NULL;
         block->container->last = NULL;
     } else {
@@ -54,6 +59,18 @@ bf_block* bf_create_block(bool is_loop, bool is_container) {
     }
     block->is_container = is_container;
     block->is_loop = is_loop;
+    block->is_linear = false;
+    return block;
+}
+
+void bf_container_free(bf_container* container) {
+    bf_block* ptr = container->first;
+    while (ptr) {
+        bf_block* next = ptr->next;
+        bf_delete_block(ptr);
+        ptr = next;
+    }
+    free(container);
 }
 
 void bf_delete_block(bf_block* block) {
@@ -63,22 +80,55 @@ void bf_delete_block(bf_block* block) {
         bf_delete_op(ptr);
         ptr = next;
     }
-    free(block->container);
+    if (block->is_container) {
+        bf_container_free(block->container);
+    }
     free(block);
 }
 
 bf_op* bf_create_op(bf_op_type op, int count, int offset) {
     bf_op* op_ = (bf_op*) malloc(sizeof(bf_op));
     op_->op = op;
-    op_->count = count;
+    op_->arg = count;
     op_->offset = offset;
     op_->next = NULL;
     op_->prev = NULL;
     return op_;
 }
 
+bf_op* bf_op_copy(bf_op* op) {
+    return bf_create_op(op->op, op->arg, op->offset);
+}
+
+bf_block* bf_block_copy(bf_block* block) {
+    bf_block* copy_block = bf_create_block(block->is_loop, block->is_container);
+    if (block->is_container) {
+        bf_block* ptr = block->container->first;
+        BF_LIST_FOREACH(block->container, ptr) {
+            bf_block* copy = bf_block_copy(ptr);
+            bf_list_append(copy_block->container, copy);
+        }
+    } else {
+        bf_op* op;
+        BF_LIST_FOREACH(block, op) {
+            bf_op* copy = bf_op_copy(op);
+            bf_list_append(copy_block, copy);
+        }
+    }
+    return copy_block;
+}
+
 void bf_delete_op(bf_op* op) {
     free(op);
+}
+
+bf_program* bf_create_program() {
+    return (bf_program*) malloc(sizeof(bf_program));
+}
+
+void bf_program_free(bf_program* program) {
+    bf_delete_block(program->container);
+    free(program);
 }
 
 int bf_count_eq_ops(bf_state* state, size_t* code_pos, char op) {
@@ -96,7 +146,6 @@ bf_program* bf_compile_state(bf_state* state) {
     bf_block* block = bf_create_block(false, false);
     program->container = bf_create_block(false, true);
     bf_block* container = program->container;
-    bf_list_append(container->container, block);
     int count;
     bf_op* new_op;
     bf_block* new_block;
@@ -135,11 +184,13 @@ bf_program* bf_compile_state(bf_state* state) {
                 code_pos++;
                 break;
             case '[':
-                new_container = bf_create_block(true, true);
-                new_block = bf_create_block(false, false);
                 bf_list_append(container->container, block);
-                block = new_block;
+
+                new_container = bf_create_block(true, true);
                 new_container->parent = container;
+                new_block = bf_create_block(false, false);
+
+                block = new_block;
                 bf_list_append(container->container, new_container);
                 container = new_container;
                 code_pos++;
@@ -155,34 +206,44 @@ bf_program* bf_compile_state(bf_state* state) {
                 break;
         }
     }
-    bf_list_append(container->container, block);
+    if (block->first) {
+        bf_list_append(container->container, block);
+    } else {
+        bf_delete_block(block);
+    }
     return program;
 }
 
 void bf_print_op(bf_op* op) {
     if (op == NULL) {
         return;
-
     }
+    
     switch (op->op) {
         case BF_ADD:
-            printf("add %d (%d)", op->count, op->offset);
+            printf("add %d (%d)", op->arg, op->offset);
             break;
         case BF_SFT:
-            printf("sft %d (%d)", op->count, op->offset);
+            printf("sft %d (%d)", op->arg, op->offset);
             break;
         case BF_PUT:
-            printf("put %d (%d)", op->count, op->offset);
+            printf("put %d (%d)", op->arg, op->offset);
             break;
         case BF_GET:
-            printf("get %d (%d)", op->count, op->offset);
+            printf("get %d (%d)", op->arg, op->offset);
+            break;
+        case BF_MUL:
+            printf("mul %d (%d)", op->arg, op->offset);
+            break;
+        case BF_CLEAR:
+            printf("clr");
             break;
     }
 }
 
 void print_indent(int indent) {
     for (int i = 0; i < indent; i++) {
-        printf("    ");
+        printf("  ");
     }
 }
 
@@ -197,8 +258,11 @@ void bf_print_ops(bf_block* block, int indent) {
 void bf_print_block(bf_block* container, int indent) {
     bf_block* block;
     BF_LIST_FOREACH(container->container, block) {
+        print_indent(indent); printf("{\n");
+        indent++;
         if (block->is_loop) {
-            print_indent(indent); printf("while [\n");
+            print_indent(indent); printf("while {\n");
+            indent++;
         }
         if (block->is_container) {
             bf_print_block(block, indent + 1);
@@ -206,11 +270,55 @@ void bf_print_block(bf_block* container, int indent) {
             bf_print_ops(block, indent);
         }
         if (block->is_loop) {
-            print_indent(indent); printf("]\n");
+            indent--;
+            print_indent(indent); printf("}\n");
         }
+        indent--;
+        print_indent(indent); printf("}\n");
     }
-    if (!bf_is_list_empty(container)) {
-        printf("\n");
+    // if (!bf_is_list_empty(container)) {
+    //     printf("\n");
+    // }
+}
+
+void bf_compile_block(bf_vm* vm, bf_block* container) {
+    bf_block* block;
+    BF_LIST_FOREACH(container->container, block) {
+        if (block->is_loop) {
+            bf_vm_compile_loop_start(vm);
+        }
+        if (block->is_container) {
+            bf_compile_block(vm, block);
+        } else {
+            bf_op* op;
+            BF_LIST_FOREACH(block, op) {
+                // printf("  "); bf_print_op(op); printf("\n");
+                switch (op->op) {
+                    case BF_ADD:
+                        bf_vm_compile_add(vm, op->arg, op->offset);
+                        break;
+                    case BF_SFT:
+                        bf_vm_compile_shift(vm, op->arg);
+                        break;
+                    case BF_PUT:
+                        bf_vm_compile_put(vm, op->offset);
+                        break;
+                    case BF_GET:
+                        bf_vm_compile_get(vm, op->offset);
+                        break;
+                    case BF_MUL:
+                        bf_vm_compile_mul(vm, op->arg, op->offset);
+                        break;
+                    case BF_CLEAR:
+                        bf_vm_compile_clear(vm);
+                        break;
+                }       
+            }
+        }
+
+        if (block->is_loop) {
+            bf_vm_compile_loop_end(vm);
+        }
     }
 }
 
@@ -220,56 +328,26 @@ void bf_print_program(bf_program* program) {
 }
 
 bf_vm* bf_compile_program(bf_program* program) {
-    bf_vm* vm = vm_create();
-    vm_begin_jit(vm);
+    bf_vm* vm = bf_vm_create();
+    bf_vm_begin_jit(vm);
     bf_compile_block(vm, program->container);
-    vm_end_jit(vm);
+    bf_vm_end_jit(vm);
     return vm;
 }
 
-void bf_compile_block(bf_vm* vm, bf_block* container) {
-
-    bf_block* block;
-    bf_block* prev_block;
-    BF_LIST_FOREACH(container->container, block) {
-        if (block->is_loop) {
-            vm_compile_loop_start(vm);
-        }
-        if (block->is_container) {
-            bf_compile_block(vm, block);
-        } else {
-            bf_op* op;
-            BF_LIST_FOREACH(block, op) {
-                switch (op->op) {
-                    case BF_ADD:
-                        vm_compile_add(vm, op->count, op->offset);
-                        break;
-                    case BF_SFT:
-                        vm_compile_shift(vm, op->count);
-                        break;
-                    case BF_PUT:
-                        vm_compile_put(vm, op->offset);
-                        break;
-                    case BF_GET:
-                        vm_compile_get(vm, op->offset);
-                        break;
-                }       
-            }
-        }
-
-        if (block->is_loop) {
-            vm_compile_loop_end(vm);
-        }
-    }
-}
-
-bf_vm* bf_compile_file(char* filename) {
+bf_vm* bf_compile_file(const char* filename) {
     bf_state* state = bf_create_state();
     bf_state_init(state); // TODO: error handling
     bf_state_read(state, filename);
     bf_program* program = bf_compile_state(state);
     bf_optimize_program(program);
-    bf_print_program(program);
+
+    if (bf_options.pretty_print) {
+        bf_print_program(program);
+    }
+
     bf_vm* vm = bf_compile_program(program);
+    bf_state_free(state);
+    bf_program_free(program);
     return vm;
 }

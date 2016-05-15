@@ -1,5 +1,5 @@
-#ifndef LIST_H_
-#define LIST_H_
+#ifndef _BF_LIST_H_
+#define _BF_LIST_H_
 
 #define bf_list_append(list, x) \
     if ((list)->first == NULL) { \
@@ -12,14 +12,16 @@
     }
 
 #define bf_list_remove(list, x) \
-    if (x->prev == NULL) { \
-        list->first = (x)->next; \
-        if ((x)->next != NULL) { \
-            (x)->next->prev = NULL; \
+    if ((list)->first == (list)->last) { \
+        (list)->first = (list)->last = NULL; \
+    } else if (x->prev == NULL) { \
+        (list)->first = (x)->next; \
+        if ((list)->first != NULL) { \
+            (list)->first->prev = NULL; \
         } \
     } else { \
         (x)->prev->next = (x)->next; \
-        if (x->prev->next == NULL) { \
+        if ((list)->last == (x)) { \
             (list)->last = (x)->prev; \
         } else { \
             (x)->next->prev = (x)->prev; \
@@ -27,22 +29,23 @@
     }
 
 #define bf_list_replace(list, x, new_x) \
-    if (x->prev == NULL) { \
-        list->first = new_x; \
+    if ((x)->prev == NULL) { \
+        (list)->first = new_x; \
+        (new_x)->next = (x)->next; \
     } else { \
-        x->prev->next = new_x; \
-        new_x->next = x->next; \
-        new_x->prev = prev; \
-        if (new_x->next == NULL) { \
-            (list)->last = (new_x); \
-        } else { \
-            (new_x)->next->prev = (new_x); \
-        } \
+        (new_x)->next = (x)->next; \
+        (new_x)->prev = (x)->prev; \
+        (x)->prev->next = new_x; \
+    } \
+    if (new_x->next == NULL) { \
+        (list)->last = new_x; \
+    } else { \
+        (new_x)->next->prev = new_x; \
     }
 
-#define bf_is_list_empty(list) (list)->first == NULL
+#define bf_is_list_empty(list) !((list)->first)
 
-#define BF_LIST_FOREACH(list, ptr) for (ptr = (list)->first; (ptr) != NULL; ptr = (ptr)->next)
-#define BF_LIST_FOREACH_SAFE(list, ptr, tmp) for (ptr = (list)->first; (ptr) != NULL && (tmp = (ptr)->next, 1); ptr = tmp)
+#define BF_LIST_FOREACH(list, ptr) for ((ptr) = (list)->first; (ptr); (ptr) = (ptr)->next)
+#define BF_LIST_FOREACH_SAFE(list, ptr, tmp) for ((ptr) = (list)->first; (ptr) && (tmp = (ptr)->next, 1); (ptr) = tmp)
 
 #endif
