@@ -69,7 +69,6 @@ void bf_optimize_reorder(bf_block* container) {
             bf_optimize_reorder(block);
         } else {
             int offset = 0;
-            int max_offset = 0;
             bf_op* tmp;
             bf_op* op;
             BF_LIST_FOREACH_SAFE(block, op, tmp) {
@@ -78,15 +77,16 @@ void bf_optimize_reorder(bf_block* container) {
                     case BF_PUT:
                     case BF_GET:
                     case BF_CLEAR:
-                        op->offset = offset;
-                        max_offset = max(offset, max_offset);
-                        break;
-                    case BF_SFT:
-                        bf_list_remove(block, op);
-                        offset += op->arg;
-                        bf_delete_op(op);
+                        op->offset += offset;
                         break;
                     case BF_MUL:
+                        op->offset += offset;
+                        op->arg2 += offset;
+                        break;
+                    case BF_SFT:
+                        offset += op->arg;
+                        bf_list_remove(block, op);
+                        bf_delete_op(op);
                         break;
                 }       
             }
@@ -163,31 +163,135 @@ bool bf_optimize_loops(bf_block* container) {
     return false;
 }
 
-void bf_optimize_merge_ops(bf_block* container) {
+void bf_optimize_ops(bf_block* container) {
     bf_block* block;
     BF_LIST_FOREACH(container->container, block) {
         if (block->is_container) {
-            bf_optimize_merge_ops(block);
+            bf_optimize_ops(block);
         } else {
             for (bf_op* op = block->first; op;) {
                 switch(op->op) {
                     case BF_ADD:
-                        if (op->next && op->next->op == BF_ADD && op->next->offset == op->offset) {
-                            // we have two ADD-ops with same offset in block
-                            // so we can merge them
-                            bf_op* new_op = bf_create_op(BF_ADD, op->arg + op->next->arg, op->offset);
+                        if (op->next && op->next->offset == op->offset) {
+                            if (op->next->op == BF_ADD) {
+                                // we have two ADD-ops with same offset in block
+                                // so we can merge them
+                                bf_op* new_op = bf_create_op(BF_ADD, op->arg + op->next->arg, op->offset);
+                                bf_list_replace(block, op, new_op);
+                                bf_list_remove(block, op->next);
+                                bf_delete_op(op->next);
+                                bf_delete_op(op);
+                                op = new_op;
+                            } else if (op->next->op == BF_CLEAR) {
+                                bf_op* next = op->next;
+                                bf_list_remove(block, op);
+                                bf_delete_op(op);
+                                op = next;
+                            }
+                        }
+                        op = op->next;
+                        break;
+                    case BF_SFT:
+                        if (op->next && op->next->op == BF_SFT) {
+                            bf_op* new_op = bf_create_op(BF_SFT, op->arg + op->next->arg, 0);
                             bf_list_replace(block, op, new_op);
                             bf_list_remove(block, op->next);
                             bf_delete_op(op->next);
                             bf_delete_op(op);
                             op = new_op;
-                            break;
+                        } else {
+                            op = op->next;
                         }
+                        break;
+                    case BF_CLEAR:
+                        if (op->next && op->next->op == BF_CLEAR) {
+                            bf_op* next = op->next;
+                            bf_list_remove(block, op);
+                            bf_delete_op(op);
+                            op = next;
+                        } else {
+                            op = op->next;
+                        }
+                        break;
                     default:
                         op = op->next;
                         break;
                 }
             }
+        }
+    }
+}
+
+bf_block* bf_merge_blocks(bf_block* block_a, bf_block* block_b) {
+    bf_op* op;
+    bf_op* new_op;
+    bf_block* result = bf_create_block(false, false);
+    int offset = 0;
+
+    BF_LIST_FOREACH(block_a, op) {
+        switch (op->op) {
+            case BF_SFT:
+                offset += op->arg;
+                break;
+            default:
+                new_op = bf_op_copy(op);
+                new_op->offset += offset;
+                if (op->op == BF_CLEAR) {
+                    new_op->arg2 += offset;
+                }
+                bf_list_append(result, new_op);
+                break;
+        }
+    }
+
+    BF_LIST_FOREACH(block_b, op) {
+        switch (op->op) {
+            case BF_SFT:
+                offset += op->arg;
+                break;
+            default:
+                new_op = bf_op_copy(op);
+                new_op->offset += offset;
+                if (op->op == BF_MUL) {
+                    new_op->arg2 += offset;
+                }
+                bf_list_append(result, new_op);
+                break;
+        }
+    }
+    new_op = bf_create_op(BF_SFT, offset, 0);
+    bf_list_append(result, new_op);
+
+    printf("merging:\n");
+    bf_print_ops(block_a, 1);
+    printf("------\n");
+    bf_print_ops(block_b, 1);
+    printf("result:\n");
+    bf_print_ops(result, 1);
+    printf("======\n");
+
+    return result;
+}
+
+void bf_optimize_merge_blocks(bf_block* container) {
+    bf_block* block;
+    BF_LIST_FOREACH(container->container, block) {
+        if (block->is_container) {
+            bf_optimize_merge_blocks(block);
+        }
+    }
+
+    for (block = container->container->first; block;) {
+        if (!block->is_container && block->next && !block->next->container) {
+            bf_block* next = block->next;
+            bf_block* result = bf_merge_blocks(block, block->next);
+            bf_list_remove(container->container, block->next);
+            bf_list_replace(container->container, block, result);
+            bf_delete_block(block);
+            bf_delete_block(next);
+            block = result;
+        } else {
+            block = block->next;
         }
     }
 }
@@ -201,11 +305,15 @@ void bf_optimize_program(bf_program* program) {
     } else if (bf_options.optimize_level == 2) {
         bf_optimize_reorder(program->container);
         bf_optimize_clear(program->container, program->container->is_loop);
-        bf_optimize_merge_ops(program->container);
+        bf_optimize_reorder(program->container);
+        bf_optimize_merge_blocks(program->container);
+        bf_optimize_ops(program->container);
     } else if (bf_options.optimize_level == 3) {
         bf_optimize_reorder(program->container);
-        bf_optimize_merge_ops(program->container);
         bf_optimize_loops(program->container);
+        bf_optimize_reorder(program->container);
+        // bf_optimize_merge_blocks(program->container);
+        bf_optimize_ops(program->container);
     }
 
     printf("after optimization:\n");

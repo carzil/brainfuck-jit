@@ -90,6 +90,7 @@ bf_op* bf_create_op(bf_op_type op, int count, int offset) {
     bf_op* op_ = (bf_op*) malloc(sizeof(bf_op));
     op_->op = op;
     op_->arg = count;
+    op_->arg2 = 0;
     op_->offset = offset;
     op_->next = NULL;
     op_->prev = NULL;
@@ -233,10 +234,10 @@ void bf_print_op(bf_op* op) {
             printf("get %d (%d)", op->arg, op->offset);
             break;
         case BF_MUL:
-            printf("mul %d (%d)", op->arg, op->offset);
+            printf("mul %d (%d->%d)", op->arg, op->arg2, op->offset);
             break;
         case BF_CLEAR:
-            printf("clr");
+            printf("clr (%d)", op->offset);
             break;
     }
 }
@@ -307,10 +308,10 @@ void bf_compile_block(bf_vm* vm, bf_block* container) {
                         bf_vm_compile_get(vm, op->offset);
                         break;
                     case BF_MUL:
-                        bf_vm_compile_mul(vm, op->arg, op->offset);
+                        bf_vm_compile_mul(vm, op->arg, op->arg2, op->offset);
                         break;
                     case BF_CLEAR:
-                        bf_vm_compile_clear(vm);
+                        bf_vm_compile_clear(vm, op->offset);
                         break;
                 }       
             }
@@ -327,12 +328,23 @@ void bf_print_program(bf_program* program) {
     printf("=====\n\n");
 }
 
-bf_vm* bf_compile_program(bf_program* program) {
-    bf_vm* vm = bf_vm_create();
+void bf_compile_program(bf_program* program, bf_vm* vm) {
+    bf_optimize_program(program);
+
     bf_vm_begin_jit(vm);
     bf_compile_block(vm, program->container);
     bf_vm_end_jit(vm);
-    return vm;
+}
+
+bf_program* bf_program_from_str(char* str) {
+    bf_state* state = bf_create_state();
+    state->filename = "<string>";
+    state->fd = 1;
+    state->code = str;
+    state->code_size = strlen(str);
+    bf_program* program = bf_compile_state(state);
+    bf_state_free(state);
+    return program;
 }
 
 bf_vm* bf_compile_file(const char* filename) {
@@ -340,13 +352,13 @@ bf_vm* bf_compile_file(const char* filename) {
     bf_state_init(state); // TODO: error handling
     bf_state_read(state, filename);
     bf_program* program = bf_compile_state(state);
-    bf_optimize_program(program);
 
     if (bf_options.pretty_print) {
         bf_print_program(program);
     }
 
-    bf_vm* vm = bf_compile_program(program);
+    bf_vm* vm = bf_vm_create();
+    bf_compile_program(program, vm);
     bf_state_free(state);
     bf_program_free(program);
     return vm;

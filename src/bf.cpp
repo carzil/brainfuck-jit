@@ -1,10 +1,14 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <time.h>
+#include <readline/readline.h>
+#include <readline/history.h>
+
 #include "bf.h"
 #include "vm.h"
 #include "compiler.h"
-#include <time.h>
+#include "optimizer.h"
 
 void default_options() {
     bf_options.debug = false;
@@ -48,17 +52,23 @@ int main(int argc, char **argv) {
     if (optind >= argc) {
         printf("bf: no file specified!\n");
     } else {
-        clock_t start = clock();
-        bf_vm* vm = bf_compile_file(argv[optind]);
-        double elapsed_time = 1.0 * (clock() - start) / CLOCKS_PER_SEC;
-        // printf("compilation took %.6f secs\n", elapsed_time);
+        BfCompiler compiler;
+        BfOptimizer optimizer;
+        BfVM vm;
 
-        start = clock();
-        bf_vm_run(vm);
-        elapsed_time = 1.0 * (clock() - start) / CLOCKS_PER_SEC;
-        // printf("run took %.6f secs\n", elapsed_time);
+        clock_t begin = clock();
 
-        bf_vm_free(vm);
+        BfProgram program = compiler.CompileFile(argv[optind]);
+        optimizer.Optimize(program, bf_options.optimize_level);
+        program.Print();
+        vm.CompileProgram(program);
+        
+        clock_t end = clock();
+
+        double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
+        std::cout << "compilation done in " << elapsed_secs << " secs" << std::endl;
+
+        vm.Run();
     }
     return 0;
 }

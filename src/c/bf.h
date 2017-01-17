@@ -1,11 +1,16 @@
 #ifndef BF_H_
 #define BF_H_
 
-struct {
+#include <stdbool.h>
+
+struct _options {
     bool debug;
     bool dump_jit;
     bool pretty_print;
     int optimize_level;
-} bf_options;
+};
+
+struct _options bf_options;
+
 
 #endif

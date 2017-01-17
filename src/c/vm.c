@@ -44,13 +44,13 @@ void bf_vm_compile_add(bf_vm* vm, int to_add, int offset) {
     jit_insn_store_relative(vm->jit_function, vm->data_ptr, offset * sizeof(cell_t), new_value);
 }
 
-void bf_vm_compile_mul(bf_vm* vm, int mul_by, int offset) {
+void bf_vm_compile_mul(bf_vm* vm, int mul_by, int source_offset, int result_offset) {
     jit_value_t factor = jit_value_create_nint_constant(vm->jit_function, jit_type_int, mul_by);
-    jit_value_t value = jit_insn_load_relative(vm->jit_function, vm->data_ptr, 0, jit_type_int);
-    jit_value_t old_value = jit_insn_load_relative(vm->jit_function, vm->data_ptr, offset * sizeof(cell_t), jit_type_int);
+    jit_value_t value = jit_insn_load_relative(vm->jit_function, vm->data_ptr, source_offset * sizeof(cell_t), jit_type_int);
+    jit_value_t old_value = jit_insn_load_relative(vm->jit_function, vm->data_ptr, result_offset * sizeof(cell_t), jit_type_int);
     jit_value_t mul_value = jit_insn_mul(vm->jit_function, value, factor);
     jit_value_t new_value = jit_insn_add(vm->jit_function, old_value, mul_value);
-    jit_insn_store_relative(vm->jit_function, vm->data_ptr, offset * sizeof(cell_t), new_value);
+    jit_insn_store_relative(vm->jit_function, vm->data_ptr, result_offset * sizeof(cell_t), new_value);
 }
 
 void bf_vm_compile_shift(bf_vm* vm, int count) {
@@ -58,9 +58,9 @@ void bf_vm_compile_shift(bf_vm* vm, int count) {
     jit_insn_store(vm->jit_function, vm->data_ptr, new_data_ptr);
 }
 
-void bf_vm_compile_clear(bf_vm* vm) {
+void bf_vm_compile_clear(bf_vm* vm, int offset) {
     jit_value_t zero = jit_value_create_nint_constant(vm->jit_function, jit_type_int, 0);
-    jit_insn_store_relative(vm->jit_function, vm->data_ptr, 0, zero);
+    jit_insn_store_relative(vm->jit_function, vm->data_ptr, offset * sizeof(cell_t), zero);
 }
 
 void bf_vm_compile_put(bf_vm* vm, int offset) {
@@ -123,6 +123,7 @@ void bf_vm_begin_jit(bf_vm* vm) {
     jit_type_t params[1] = { jit_type_int_ptr };
     jit_type_t signature = jit_type_create_signature(jit_abi_cdecl, jit_type_void, params, 1, 0);
     vm->jit_function = jit_function_create(vm->jit_context, signature);
+    jit_function_set_optimization_level(vm->jit_function, jit_function_get_max_optimization_level());
     jit_type_free(signature);
 
     vm->data_ptr = jit_value_get_param(vm->jit_function, 0);
@@ -137,6 +138,12 @@ void bf_vm_end_jit(bf_vm* vm) {
 
     jit_function_compile(vm->jit_function);
     jit_context_build_end(vm->jit_context);
+}
+
+void bf_vm_reset(bf_vm* vm) {
+    jit_type_free(vm->putchar_signature);
+    jit_type_free(vm->getchar_signature);
+    jit_context_destroy(vm->jit_context);
 }
 
 int bf_vm_run(bf_vm* vm) {
